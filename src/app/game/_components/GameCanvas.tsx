@@ -36,13 +36,20 @@ const FIRE_RATE_MS = 140; // min ms between shots
 const GOAL_DISTANCE = 6000; // reach to clear (worldY)
 
 const tryLoadImage = (src: string) => {
+  if (typeof window === 'undefined') {
+    return { complete: false, naturalWidth: 0, naturalHeight: 0 } as HTMLImageElement;
+  }
   const img = new Image();
   img.src = src;
   return img;
-};
+};;
 
 // Prefer PNG; .jpg/.jpeg kept as secondary fallbacks
 const bgCandidates = ["/maps/map1.png", "/maps/map1.jpg", "/maps/map1.jpeg"];
+
+const GRID_SIZE = 8;
+const TOTAL_TILES = GRID_SIZE * GRID_SIZE;
+const CAMERA_SPEED = 0.15; // Speed of camera movement (0-1 per second)
 
 export default function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -57,6 +64,16 @@ export default function GameCanvas() {
   const [score, setScore] = useState(0);
   const [powerLevel, setPowerLevel] = useState(1);
   const submittedRef = useRef(false);
+
+  // Tile system state
+  const [currentTileIndex, setCurrentTileIndex] = useState(0);
+  const tilesRef = useRef<HTMLImageElement[]>([]);
+  const tileStartTimeRef = useRef<number>(0);
+  // Track destroyed obstacles and collected items per tile
+  const destroyedObstaclesRef = useRef<Set<string>>(new Set());
+  const collectedItemsRef = useRef<Set<string>>(new Set());
+  const [slideOffset, setSlideOffset] = useState({ x: 0, y: 0 });
+  const slideAnimationRef = useRef<{ startTime: number; fromOffset: { x: number; y: number }; toOffset: { x: number; y: number } } | null>(null);
 
   const recordRun = api.game.recordRun.useMutation();
   const { data: serverKeymap } = api.keymap.get.useQuery();
@@ -80,6 +97,51 @@ export default function GameCanvas() {
     const candidate = bgCandidates.find((s) => !!s) ?? "/maps/map1.png";
     return tryLoadImage(candidate);
   }, []);
+
+  // Load all tile images
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const tiles: HTMLImageElement[] = [];
+    for (let i = 0; i < TOTAL_TILES; i++) {
+      const tileIndex = String(i).padStart(2, '0');
+      const img = new Image();
+      img.src = `/maps/tiles/tile_${tileIndex}.png`;
+      tiles.push(img);
+    }
+    tilesRef.current = tiles;
+  }, []);
+
+  // Get boustrophedon position for tile index
+  const getTilePosition = (index: number) => {
+    const row = Math.floor(index / GRID_SIZE);
+    const col = index % GRID_SIZE;
+    const isEvenRow = row % 2 === 0;
+    const actualCol = isEvenRow ? col : (GRID_SIZE - 1 - col);
+    return { row, col: actualCol };
+  };
+
+  // Easing function for smooth transitions
+  const easeInOutCubic = (t: number): number => {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  };
+
+  // Get slide direction between two tiles
+  const getSlideDirection = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return { x: 0, y: 0 };
+
+    const fromPos = getTilePosition(fromIndex);
+    const toPos = getTilePosition(toIndex);
+
+    // Determine primary direction
+    if (fromPos.row !== toPos.row) {
+      // Row change - vertical movement
+      return fromPos.row < toPos.row ? { x: 0, y: -1 } : { x: 0, y: 1 };
+    } else {
+      // Same row - horizontal movement
+      return fromPos.col < toPos.col ? { x: -1, y: 0 } : { x: 1, y: 0 };
+    }
+  };
 
   // --- Route & camera setup (serpentine) ---
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
@@ -154,6 +216,9 @@ export default function GameCanvas() {
     setWorldY(CANVAS_H);
     setScore(0);
     setPowerLevel(1);
+    setCurrentTileIndex(0);
+    setSlideOffset({ x: 0, y: 0 });
+    tileStartTimeRef.current = null;
     // Clear input state to avoid stuck keys between runs
     keysRef.current = {};
     playerRef.current = {
@@ -169,6 +234,9 @@ export default function GameCanvas() {
     bulletsRef.current = [];
     obstaclesRef.current = [];
     powersRef.current = [];
+    // Clear destroyed/collected item records
+    destroyedObstaclesRef.current.clear();
+    collectedItemsRef.current.clear();
   }, []);
 
   const DEFAULT_CODE_KEYMAP = useMemo(
@@ -348,41 +416,196 @@ export default function GameCanvas() {
       // Shooting
       if (k.space) fire(ts);
 
-      // Spawn entities probabilistically using dt
-      if (Math.random() < SPAWN_RATE_OBS * dt) spawnObstacle(-OBSTACLE_SIZE.y);
-      if (Math.random() < SPAWN_RATE_PWR * dt) spawnPower(-POWER_SIZE.y * 2);
+      // Calculate camera offset and current tile info
+      let cameraOffsetX = 0;
+      let cameraOffsetY = 0;
+      let currentTileIdx = 0;
+      let visibleTiles = [];
+      
+      if (tilesRef.current.length > 0 && state.status === "running") {
+        // Initialize start time if not set
+        if (!tileStartTimeRef.current) {
+          tileStartTimeRef.current = ts;
+        }
+        
+        const elapsedTime = (ts - tileStartTimeRef.current) / 1000;
+        const totalProgress = elapsedTime * CAMERA_SPEED;
+        const pathPosition = totalProgress % TOTAL_TILES;
+        const currentTileFloat = pathPosition;
+        currentTileIdx = Math.floor(currentTileFloat);
+        const nextTileIdx = (currentTileIdx + 1) % TOTAL_TILES;
+        const progress = currentTileFloat - currentTileIdx;
+        
+        // Update displayed tile index
+        if (currentTileIdx !== currentTileIndex) {
+          setCurrentTileIndex(currentTileIdx);
+        }
+        
+        // Get tile positions in the grid
+        const currentPos = getTilePosition(currentTileIdx);
+        const nextPos = getTilePosition(nextTileIdx);
+        
+        // Calculate camera offset
+        if (currentPos.row === nextPos.row) {
+          // Horizontal movement within the same row
+          const direction = currentPos.row % 2 === 0 ? 1 : -1;
+          cameraOffsetX = -direction * CANVAS_W * progress;
+        } else {
+          // Vertical movement to next row
+          cameraOffsetY = -CANVAS_H * progress;
+        }
+        
+        // Determine visible tiles (current and potentially next)
+        visibleTiles = [currentTileIdx];
+        if (progress > 0.1) { // Only show next tile when transition is significant
+          visibleTiles.push(nextTileIdx);
+        }
+      }
 
-      // Update bullets
+      // Generate tile-based static obstacles and power-ups
+      obstaclesRef.current = [];
+      powersRef.current = [];
+      
+      visibleTiles.forEach((tileIdx) => {
+        // Generate deterministic obstacles for each tile
+        const tileRandom = new (class {
+          seed: number;
+          constructor(seed: number) {
+            this.seed = seed;
+          }
+          next() {
+            this.seed = (this.seed * 9301 + 49297) % 233280;
+            return this.seed / 233280;
+          }
+        })(tileIdx * 1000); // Use tile index as seed
+        
+        // Generate 2-4 obstacles per tile
+        const obstacleCount = Math.floor(tileRandom.next() * 3) + 2;
+        
+        for (let i = 0; i < obstacleCount; i++) {
+          const obstacleId = `${tileIdx}-obs-${i}`;
+          
+          // Always consume the random numbers to keep sequence consistent
+          const x = tileRandom.next() * (CANVAS_W - OBSTACLE_SIZE.x);
+          const y = tileRandom.next() * (CANVAS_H - OBSTACLE_SIZE.y);
+          
+          // Skip if this obstacle has been destroyed, but keep random sequence consistent
+          if (destroyedObstaclesRef.current.has(obstacleId)) {
+            continue;
+          }
+          
+          // Apply camera offset to position obstacles correctly
+          let adjustedX = x;
+          let adjustedY = y;
+          
+          if (tileIdx !== currentTileIdx) {
+            // This is the next tile, apply transition offset
+            const currentPos = getTilePosition(currentTileIdx);
+            const nextPos = getTilePosition(tileIdx);
+            
+            if (currentPos.row === nextPos.row) {
+              // Same row - horizontal offset
+              const direction = currentPos.row % 2 === 0 ? 1 : -1;
+              adjustedX = x + direction * CANVAS_W;
+            } else {
+              // Next row - vertical offset
+              adjustedY = y + CANVAS_H;
+            }
+          }
+          
+          // Apply camera offset
+          adjustedX += cameraOffsetX;
+          adjustedY += cameraOffsetY;
+          
+          obstaclesRef.current.push({
+            type: "obstacle",
+            id: obstacleId,
+            x: adjustedX,
+            y: adjustedY,
+            w: OBSTACLE_SIZE.x,
+            h: OBSTACLE_SIZE.y,
+            vx: 0,
+            vy: 0, // Static obstacles
+          });
+        }
+        
+        // Generate 1-2 power-ups per tile
+        const powerCount = Math.floor(tileRandom.next() * 2) + 1;
+        
+        for (let i = 0; i < powerCount; i++) {
+          const itemId = `${tileIdx}-pwr-${i}`;
+          
+          // Always consume the random numbers to keep sequence consistent
+          const x = tileRandom.next() * (CANVAS_W - POWER_SIZE.x);
+          const y = tileRandom.next() * (CANVAS_H - POWER_SIZE.y);
+          
+          // Skip if this item has been collected, but keep random sequence consistent
+          if (collectedItemsRef.current.has(itemId)) {
+            continue;
+          }
+          
+          // Apply camera offset to position power-ups correctly
+          let adjustedX = x;
+          let adjustedY = y;
+          
+          if (tileIdx !== currentTileIdx) {
+            // This is the next tile, apply transition offset
+            const currentPos = getTilePosition(currentTileIdx);
+            const nextPos = getTilePosition(tileIdx);
+            
+            if (currentPos.row === nextPos.row) {
+              // Same row - horizontal offset
+              const direction = currentPos.row % 2 === 0 ? 1 : -1;
+              adjustedX = x + direction * CANVAS_W;
+            } else {
+              // Next row - vertical offset
+              adjustedY = y + CANVAS_H;
+            }
+          }
+          
+          // Apply camera offset
+          adjustedX += cameraOffsetX;
+          adjustedY += cameraOffsetY;
+          
+          powersRef.current.push({
+            type: "powerup",
+            id: itemId,
+            x: adjustedX,
+            y: adjustedY,
+            w: POWER_SIZE.x,
+            h: POWER_SIZE.y,
+            vx: 0,
+            vy: 0, // Static power-ups
+          });
+        }
+      });
+
+      // Update bullets (not affected by camera movement)
       bulletsRef.current.forEach((b) => (b.y += b.vy * dt));
       bulletsRef.current = bulletsRef.current.filter((b) => b.y + b.h > -40);
-
-      // Update obstacles/powers (move with their vy + scroll)
-      obstaclesRef.current.forEach(
-        (o) => (o.y += (o.vy + SCROLL_SPEED * 0.3) * dt),
-      );
-      powersRef.current.forEach(
-        (o) => (o.y += (o.vy + SCROLL_SPEED * 0.25) * dt),
-      );
-      obstaclesRef.current = obstaclesRef.current.filter(
-        (o) => o.y < CANVAS_H + 80,
-      );
-      powersRef.current = powersRef.current.filter((o) => o.y < CANVAS_H + 80);
 
       // Collisions: bullets vs obstacles
       for (const b of bulletsRef.current) {
         for (const o of obstaclesRef.current) {
           if (aabb(b, o)) {
-            o.y = CANVAS_H + 100; // remove later
-            b.y = -100; // remove later
+            // Mark obstacle as destroyed
+            if (o.id) {
+              destroyedObstaclesRef.current.add(o.id);
+            }
+            // Mark bullet for removal
+            b.y = -100;
             setScore((s) => s + 10);
           }
         }
       }
-      obstaclesRef.current = obstaclesRef.current.filter((o) => o.y < CANVAS_H);
       bulletsRef.current = bulletsRef.current.filter((b) => b.y > -50);
 
       // Collisions: player vs obstacle
-      if (obstaclesRef.current.some((o) => aabb(p, o))) {
+      const visibleObstacles = obstaclesRef.current.filter(
+        (o) => o.x >= -o.w && o.x <= CANVAS_W && o.y >= -o.h && o.y <= CANVAS_H
+      );
+      
+      if (visibleObstacles.some((o) => aabb(p, o))) {
         const startedAt =
           (state.status === "running" ? state.startedAt : ts) || ts;
         const durationMs = Math.max(0, ts - startedAt);
@@ -390,14 +613,20 @@ export default function GameCanvas() {
       }
 
       // Collisions: player vs power-up
-      for (const pw of powersRef.current) {
+      const visiblePowers = powersRef.current.filter(
+        (pw) => pw.x >= -pw.w && pw.x <= CANVAS_W && pw.y >= -pw.h && pw.y <= CANVAS_H
+      );
+      
+      for (const pw of visiblePowers) {
         if (aabb(p, pw)) {
+          // Mark item as collected
+          if (pw.id) {
+            collectedItemsRef.current.add(pw.id);
+          }
           setPowerLevel((lv) => Math.min(5, lv + 1));
           setScore((s) => s + 5);
-          pw.y = CANVAS_H + 100;
         }
       }
-      powersRef.current = powersRef.current.filter((pw) => pw.y < CANVAS_H);
 
       // Win condition (distance along path or fallback)
       if (worldY + advance >= goalDistance) {
@@ -410,8 +639,50 @@ export default function GameCanvas() {
       // Draw
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // Background: follow route if ready; else fallback to vertical tile
-      if (bgImg.complete && bgImg.naturalWidth > 0 && routeRef.current) {
+      // Continuous smooth camera panning through tiles
+      if (tilesRef.current.length > 0 && state.status === "running") {
+        // Draw current tile
+        const currentTile = tilesRef.current[currentTileIdx];
+        if (currentTile && currentTile.complete) {
+          ctx.drawImage(
+            currentTile,
+            0, 0, currentTile.naturalWidth, currentTile.naturalHeight,
+            cameraOffsetX, cameraOffsetY, CANVAS_W, CANVAS_H
+          );
+        }
+        
+        // Draw next tile for seamless transition
+        const elapsedTime = (ts - tileStartTimeRef.current) / 1000;
+        const totalProgress = elapsedTime * CAMERA_SPEED;
+        const pathPosition = totalProgress % TOTAL_TILES;
+        const currentTileFloat = pathPosition;
+        const nextTileIdx = (Math.floor(currentTileFloat) + 1) % TOTAL_TILES;
+        const progress = currentTileFloat - Math.floor(currentTileFloat);
+        
+        const nextTile = tilesRef.current[nextTileIdx];
+        if (nextTile && nextTile.complete && progress > 0) {
+          const currentPos = getTilePosition(currentTileIdx);
+          const nextPos = getTilePosition(nextTileIdx);
+          
+          let nextX = cameraOffsetX;
+          let nextY = cameraOffsetY;
+          
+          if (currentPos.row === nextPos.row) {
+            // Same row - position next tile horizontally
+            const direction = currentPos.row % 2 === 0 ? 1 : -1;
+            nextX = cameraOffsetX + direction * CANVAS_W;
+          } else {
+            // Next row - position next tile vertically
+            nextY = cameraOffsetY + CANVAS_H;
+          }
+          
+          ctx.drawImage(
+            nextTile,
+            0, 0, nextTile.naturalWidth, nextTile.naturalHeight,
+            nextX, nextY, CANVAS_W, CANVAS_H
+          );
+        }
+      } else if (bgImg.complete && bgImg.naturalWidth > 0 && routeRef.current) {
         // Choose a viewport smaller than the image to allow panning in both axes.
         const viewportFrac = 0.45; // portion of the image width used for the viewport
         const srcW = Math.max(
@@ -475,22 +746,38 @@ export default function GameCanvas() {
       ctx.fillStyle = "#93c5fd";
       bulletsRef.current.forEach((b) => ctx.fillRect(b.x, b.y, b.w, b.h));
 
-      // Obstacles
+      // Obstacles (only draw visible ones)
       ctx.fillStyle = "#f87171";
-      obstaclesRef.current.forEach((o) => ctx.fillRect(o.x, o.y, o.w, o.h));
+      obstaclesRef.current.forEach((o) => {
+        if (o.x >= -o.w && o.x <= CANVAS_W && o.y >= -o.h && o.y <= CANVAS_H) {
+          ctx.fillRect(o.x, o.y, o.w, o.h);
+        }
+      });
 
-      // Power-ups
+      // Power-ups (only draw visible ones)
       ctx.fillStyle = "#fbbf24";
-      powersRef.current.forEach((pw) => ctx.fillRect(pw.x, pw.y, pw.w, pw.h));
+      powersRef.current.forEach((pw) => {
+        if (pw.x >= -pw.w && pw.x <= CANVAS_W && pw.y >= -pw.h && pw.y <= CANVAS_H) {
+          ctx.fillRect(pw.x, pw.y, pw.w, pw.h);
+        }
+      });
 
       // HUD
       ctx.fillStyle = "#ffffff";
       ctx.font = "16px monospace";
-      ctx.fillText(
-        `Score: ${score}  Power: ${powerLevel}  Dist: ${Math.floor(worldY)}/${goalDistance}`,
-        12,
-        22,
-      );
+      if (state.status === "running" && tilesRef.current.length > 0) {
+        ctx.fillText(
+          `Score: ${score}  Power: ${powerLevel}  Tile: ${currentTileIndex + 1}/${TOTAL_TILES}`,
+          12,
+          22,
+        );
+      } else {
+        ctx.fillText(
+          `Score: ${score}  Power: ${powerLevel}  Dist: ${Math.floor(worldY)}/${goalDistance}`,
+          12,
+          22,
+        );
+      }
 
       // Continue loop if still running
       if (state.status === "running") {
@@ -499,7 +786,7 @@ export default function GameCanvas() {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [fire, score, powerLevel, worldY, state.status, goalDistance, getPointAt],
-  );
+  );;;;;;
 
   // Game loop control
   useEffect(() => {
@@ -526,8 +813,13 @@ export default function GameCanvas() {
   const start = () => {
     // Ensure clean input state when starting
     keysRef.current = {};
-    setState({ status: "running", startedAt: performance.now() });
+    const now = performance.now();
+    setState({ status: "running", startedAt: now });
     submittedRef.current = false;
+    setCurrentTileIndex(0);
+    tileStartTimeRef.current = now;
+    setSlideOffset({ x: 0, y: 0 });
+    slideAnimationRef.current = null;
   };
 
   const overlay = () => {
