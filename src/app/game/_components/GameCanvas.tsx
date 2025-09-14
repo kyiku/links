@@ -10,8 +10,8 @@ type EntityBase = Rect & { vx: number; vy: number };
 
 type Player = EntityBase & { type: "player"; speed: number };
 type Bullet = EntityBase & { type: "bullet"; speed: number };
-type Obstacle = EntityBase & { type: "obstacle" };
-type PowerUp = EntityBase & { type: "powerup" };
+type Obstacle = EntityBase & { type: "obstacle"; id?: string };
+type PowerUp = EntityBase & { type: "powerup"; id?: string };
 
 type GameState =
   | { status: "init" }
@@ -58,9 +58,12 @@ export default function GameCanvas() {
   const keysRef = useRef<Record<string, boolean>>({});
   const lastShotRef = useRef<number>(0);
 
+  // Responsive canvas dimensions
+  const [canvasSize, setCanvasSize] = useState({ width: CANVAS_W, height: CANVAS_H });
+
   const [state, setState] = useState<GameState>({ status: "init" });
   // Start viewing from the bottom of the background image so it feels like "climbing up".
-  const [worldY, setWorldY] = useState(CANVAS_H);
+  const [worldY, setWorldY] = useState(canvasSize.height);
   const [score, setScore] = useState(0);
   const [powerLevel, setPowerLevel] = useState(1);
   const submittedRef = useRef(false);
@@ -80,7 +83,7 @@ export default function GameCanvas() {
   // Boss (Chimera) system
   const [chimeraSize, setChimeraSize] = useState<number>(32); // Start small (32x32)
   const [chimeraHits, setChimeraHits] = useState<number>(0);
-  const [chimeraPos, setChimeraPos] = useState({ x: CANVAS_W / 2, y: 50 });
+  const [chimeraPos, setChimeraPos] = useState({ x: canvasSize.width / 2, y: 50 });
   const [chimeraVel, setChimeraVel] = useState({ x: 150, y: 100 });
   const CHIMERA_INITIAL_SIZE = 32;
   const CHIMERA_GROWTH_RATE = 4; // Pixels to grow per hit
@@ -93,8 +96,8 @@ export default function GameCanvas() {
 
   const playerRef = useRef<Player>({
     type: "player",
-    x: CANVAS_W / 2 - PLAYER_SIZE.x / 2,
-    y: CANVAS_H - 120,
+    x: canvasSize.width / 2 - PLAYER_SIZE.x / 2,
+    y: canvasSize.height - 120,
     w: PLAYER_SIZE.x,
     h: PLAYER_SIZE.y,
     vx: 0,
@@ -110,6 +113,47 @@ export default function GameCanvas() {
     const candidate = bgCandidates.find((s) => !!s) ?? "/maps/map1.png";
     return tryLoadImage(candidate);
   }, []);
+
+  // Calculate responsive canvas size based on viewport
+  useEffect(() => {
+    const updateCanvasSize = () => {
+      if (typeof window === 'undefined') return;
+      
+      const maxWidth = window.innerWidth - 32; // 16px padding on each side
+      const maxHeight = window.innerHeight - 100; // Leave space for UI elements
+      
+      // Calculate aspect ratio based scaling
+      const aspectRatio = CANVAS_W / CANVAS_H;
+      
+      let newWidth = maxWidth;
+      let newHeight = newWidth / aspectRatio;
+      
+      // If height exceeds viewport, scale by height instead
+      if (newHeight > maxHeight) {
+        newHeight = maxHeight;
+        newWidth = newHeight * aspectRatio;
+      }
+      
+      // Ensure minimum size
+      newWidth = Math.max(400, newWidth);
+      newHeight = Math.max(500, newHeight);
+      
+      // Ensure maximum size doesn't exceed original
+      newWidth = Math.min(CANVAS_W, newWidth);
+      newHeight = Math.min(CANVAS_H, newHeight);
+      
+      setCanvasSize({ width: newWidth, height: newHeight });
+    };
+
+    updateCanvasSize();
+    window.addEventListener('resize', updateCanvasSize);
+    return () => window.removeEventListener('resize', updateCanvasSize);
+  }, []);
+
+  // Update world Y when canvas size changes
+  useEffect(() => {
+    setWorldY(canvasSize.height);
+  }, [canvasSize.height]);
 
   // Load all tile images
   useEffect(() => {
@@ -226,25 +270,25 @@ export default function GameCanvas() {
   const reset = useCallback(() => {
     setState({ status: "init" });
     // Reset to show the bottom of the image again at restart
-    setWorldY(CANVAS_H);
+    setWorldY(canvasSize.height);
     setScore(0);
     setPowerLevel(1);
     setCurrentTileIndex(0);
     setSlideOffset({ x: 0, y: 0 });
-    tileStartTimeRef.current = null;
+    tileStartTimeRef.current = Date.now();
     // Reset power-up timer
     setPowerUpEndTime(0);
     // Reset Chimera boss
     setChimeraSize(CHIMERA_INITIAL_SIZE);
     setChimeraHits(0);
-    setChimeraPos({ x: CANVAS_W / 2, y: 50 });
+    setChimeraPos({ x: canvasSize.width / 2, y: 50 });
     setChimeraVel({ x: 150, y: 100 });
     // Clear input state to avoid stuck keys between runs
     keysRef.current = {};
     playerRef.current = {
       type: "player",
-      x: CANVAS_W / 2 - PLAYER_SIZE.x / 2,
-      y: CANVAS_H - 120,
+      x: canvasSize.width / 2 - PLAYER_SIZE.x / 2,
+      y: canvasSize.height - 120,
       w: PLAYER_SIZE.x,
       h: PLAYER_SIZE.y,
       vx: 0,
@@ -257,7 +301,7 @@ export default function GameCanvas() {
     // Clear destroyed/collected item records
     destroyedObstaclesRef.current.clear();
     collectedItemsRef.current.clear();
-  }, []);
+  }, [canvasSize]);
 
   const DEFAULT_CODE_KEYMAP = useMemo(
     () => ({
@@ -378,7 +422,7 @@ export default function GameCanvas() {
 
   // Spawn helpers
   const spawnObstacle = (y: number) => {
-    const x = Math.random() * (CANVAS_W - OBSTACLE_SIZE.x);
+    const x = Math.random() * (canvasSize.width - OBSTACLE_SIZE.x);
     obstaclesRef.current.push({
       type: "obstacle",
       x,
@@ -390,7 +434,7 @@ export default function GameCanvas() {
     });
   };
   const spawnPower = (y: number) => {
-    const x = Math.random() * (CANVAS_W - POWER_SIZE.x);
+    const x = Math.random() * (canvasSize.width - POWER_SIZE.x);
     powersRef.current.push({
       type: "powerup",
       x,
@@ -436,8 +480,8 @@ export default function GameCanvas() {
       const spd = p.speed;
       p.vx = (ax / len) * spd;
       p.vy = (ay / len) * spd + SCROLL_SPEED * 0.1; // slight push upward
-      p.x = Math.max(0, Math.min(CANVAS_W - p.w, p.x + p.vx * dt));
-      p.y = Math.max(0, Math.min(CANVAS_H - p.h, p.y + p.vy * dt));
+      p.x = Math.max(0, Math.min(canvasSize.width - p.w, p.x + p.vx * dt));
+      p.y = Math.max(0, Math.min(canvasSize.height - p.h, p.y + p.vy * dt));
 
       // Shooting
       if (k.space) fire(ts);
@@ -446,7 +490,7 @@ export default function GameCanvas() {
       let cameraOffsetX = 0;
       let cameraOffsetY = 0;
       let currentTileIdx = 0;
-      let visibleTiles = [];
+      let visibleTiles: number[] = [];
       
       if (tilesRef.current.length > 0 && state.status === "running") {
         // Initialize start time if not set
@@ -475,10 +519,10 @@ export default function GameCanvas() {
         if (currentPos.row === nextPos.row) {
           // Horizontal movement within the same row
           const direction = currentPos.row % 2 === 0 ? 1 : -1;
-          cameraOffsetX = -direction * CANVAS_W * progress;
+          cameraOffsetX = -direction * canvasSize.width * progress;
         } else {
           // Vertical movement to next row
-          cameraOffsetY = -CANVAS_H * progress;
+          cameraOffsetY = -canvasSize.height * progress;
         }
         
         // Determine visible tiles (current and potentially next)
@@ -512,8 +556,8 @@ export default function GameCanvas() {
           const obstacleId = `${tileIdx}-obs-${i}`;
           
           // Always consume the random numbers to keep sequence consistent
-          const x = tileRandom.next() * (CANVAS_W - OBSTACLE_SIZE.x);
-          const y = tileRandom.next() * (CANVAS_H - OBSTACLE_SIZE.y);
+          const x = tileRandom.next() * (canvasSize.width - OBSTACLE_SIZE.x);
+          const y = tileRandom.next() * (canvasSize.height - OBSTACLE_SIZE.y);
           
           // Skip if this obstacle has been destroyed, but keep random sequence consistent
           if (destroyedObstaclesRef.current.has(obstacleId)) {
@@ -532,10 +576,10 @@ export default function GameCanvas() {
             if (currentPos.row === nextPos.row) {
               // Same row - horizontal offset
               const direction = currentPos.row % 2 === 0 ? 1 : -1;
-              adjustedX = x + direction * CANVAS_W;
+              adjustedX = x + direction * canvasSize.width;
             } else {
               // Next row - vertical offset
-              adjustedY = y + CANVAS_H;
+              adjustedY = y + canvasSize.height;
             }
           }
           
@@ -562,8 +606,8 @@ export default function GameCanvas() {
           const itemId = `${tileIdx}-pwr-${i}`;
           
           // Always consume the random numbers to keep sequence consistent
-          const x = tileRandom.next() * (CANVAS_W - POWER_SIZE.x);
-          const y = tileRandom.next() * (CANVAS_H - POWER_SIZE.y);
+          const x = tileRandom.next() * (canvasSize.width - POWER_SIZE.x);
+          const y = tileRandom.next() * (canvasSize.height - POWER_SIZE.y);
           
           // Skip if this item has been collected, but keep random sequence consistent
           if (collectedItemsRef.current.has(itemId)) {
@@ -582,10 +626,10 @@ export default function GameCanvas() {
             if (currentPos.row === nextPos.row) {
               // Same row - horizontal offset
               const direction = currentPos.row % 2 === 0 ? 1 : -1;
-              adjustedX = x + direction * CANVAS_W;
+              adjustedX = x + direction * canvasSize.width;
             } else {
               // Next row - vertical offset
-              adjustedY = y + CANVAS_H;
+              adjustedY = y + canvasSize.height;
             }
           }
           
@@ -635,16 +679,16 @@ export default function GameCanvas() {
       if (newChimeraX <= 0) {
         newChimeraX = 0;
         newVelX = Math.abs(newVelX);
-      } else if (newChimeraX >= CANVAS_W - chimeraSize) {
-        newChimeraX = CANVAS_W - chimeraSize;
+      } else if (newChimeraX >= canvasSize.width - chimeraSize) {
+        newChimeraX = canvasSize.width - chimeraSize;
         newVelX = -Math.abs(newVelX);
       }
 
       if (newChimeraY <= 0) {
         newChimeraY = 0;
         newVelY = Math.abs(newVelY);
-      } else if (newChimeraY >= CANVAS_H - chimeraSize) {
-        newChimeraY = CANVAS_H - chimeraSize;
+      } else if (newChimeraY >= canvasSize.height - chimeraSize) {
+        newChimeraY = canvasSize.height - chimeraSize;
         newVelY = -Math.abs(newVelY);
       }
 
@@ -674,7 +718,7 @@ export default function GameCanvas() {
 
       // Collisions: player vs obstacle
       const visibleObstacles = obstaclesRef.current.filter(
-        (o) => o.x >= -o.w && o.x <= CANVAS_W && o.y >= -o.h && o.y <= CANVAS_H
+        (o) => o.x >= -o.w && o.x <= canvasSize.width && o.y >= -o.h && o.y <= canvasSize.height
       );
       
       if (visibleObstacles.some((o) => aabb(p, o))) {
@@ -686,7 +730,7 @@ export default function GameCanvas() {
 
       // Collisions: player vs power-up
       const visiblePowers = powersRef.current.filter(
-        (pw) => pw.x >= -pw.w && pw.x <= CANVAS_W && pw.y >= -pw.h && pw.y <= CANVAS_H
+        (pw) => pw.x >= -pw.w && pw.x <= canvasSize.width && pw.y >= -pw.h && pw.y <= canvasSize.height
       );
       
       for (const pw of visiblePowers) {
@@ -728,7 +772,7 @@ export default function GameCanvas() {
       }
 
       // Draw
-      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
 
       // Continuous smooth camera panning through tiles
       if (tilesRef.current.length > 0 && state.status === "running") {
@@ -738,7 +782,7 @@ export default function GameCanvas() {
           ctx.drawImage(
             currentTile,
             0, 0, currentTile.naturalWidth, currentTile.naturalHeight,
-            cameraOffsetX, cameraOffsetY, CANVAS_W, CANVAS_H
+            cameraOffsetX, cameraOffsetY, canvasSize.width, canvasSize.height
           );
         }
         
@@ -761,16 +805,16 @@ export default function GameCanvas() {
           if (currentPos.row === nextPos.row) {
             // Same row - position next tile horizontally
             const direction = currentPos.row % 2 === 0 ? 1 : -1;
-            nextX = cameraOffsetX + direction * CANVAS_W;
+            nextX = cameraOffsetX + direction * canvasSize.width;
           } else {
             // Next row - position next tile vertically
-            nextY = cameraOffsetY + CANVAS_H;
+            nextY = cameraOffsetY + canvasSize.height;
           }
           
           ctx.drawImage(
             nextTile,
             0, 0, nextTile.naturalWidth, nextTile.naturalHeight,
-            nextX, nextY, CANVAS_W, CANVAS_H
+            nextX, nextY, canvasSize.width, canvasSize.height
           );
         }
       } else if (bgImg.complete && bgImg.naturalWidth > 0 && routeRef.current) {
@@ -787,7 +831,7 @@ export default function GameCanvas() {
           64,
           Math.min(
             bgImg.naturalHeight,
-            Math.floor((srcW * CANVAS_H) / CANVAS_W),
+            Math.floor((srcW * canvasSize.height) / canvasSize.width),
           ),
         );
         const cam = getPointAt(worldY) ?? {
@@ -802,12 +846,12 @@ export default function GameCanvas() {
           0,
           Math.min(bgImg.naturalHeight - srcH, cam.y - srcH / 2),
         );
-        ctx.drawImage(bgImg, sx, sy, srcW, srcH, 0, 0, CANVAS_W, CANVAS_H);
+        ctx.drawImage(bgImg, sx, sy, srcW, srcH, 0, 0, canvasSize.width, canvasSize.height);
       } else if (bgImg.complete && bgImg.naturalWidth > 0) {
         // tile vertically using worldY as offset
-        const imgH = (CANVAS_W / bgImg.naturalWidth) * bgImg.naturalHeight;
+        const imgH = (canvasSize.width / bgImg.naturalWidth) * bgImg.naturalHeight;
         const offset = (worldY % imgH) - imgH;
-        for (let y = offset; y < CANVAS_H; y += imgH) {
+        for (let y = offset; y < canvasSize.height; y += imgH) {
           ctx.drawImage(
             bgImg,
             0,
@@ -816,16 +860,16 @@ export default function GameCanvas() {
             bgImg.naturalHeight,
             0,
             Math.floor(y),
-            CANVAS_W,
+            canvasSize.width,
             Math.floor(imgH),
           );
         }
       } else {
-        const grd = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+        const grd = ctx.createLinearGradient(0, 0, 0, canvasSize.height);
         grd.addColorStop(0, "#082032");
         grd.addColorStop(1, "#2C394B");
         ctx.fillStyle = grd;
-        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+        ctx.fillRect(0, 0, canvasSize.width, canvasSize.height);
       }
 
       // Draw entities
@@ -840,7 +884,7 @@ export default function GameCanvas() {
       // Obstacles (only draw visible ones)
       ctx.fillStyle = "#f87171";
       obstaclesRef.current.forEach((o) => {
-        if (o.x >= -o.w && o.x <= CANVAS_W && o.y >= -o.h && o.y <= CANVAS_H) {
+        if (o.x >= -o.w && o.x <= canvasSize.width && o.y >= -o.h && o.y <= canvasSize.height) {
           ctx.fillRect(o.x, o.y, o.w, o.h);
         }
       });
@@ -848,7 +892,7 @@ export default function GameCanvas() {
       // Power-ups (only draw visible ones)
       ctx.fillStyle = "#fbbf24";
       powersRef.current.forEach((pw) => {
-        if (pw.x >= -pw.w && pw.x <= CANVAS_W && pw.y >= -pw.h && pw.y <= CANVAS_H) {
+        if (pw.x >= -pw.w && pw.x <= canvasSize.width && pw.y >= -pw.h && pw.y <= canvasSize.height) {
           ctx.fillRect(pw.x, pw.y, pw.w, pw.h);
         }
       });
@@ -887,7 +931,7 @@ export default function GameCanvas() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fire, score, powerLevel, worldY, state.status, goalDistance, getPointAt, powerUpEndTime, chimeraSize, chimeraHits, chimeraPos, chimeraVel],
+    [fire, score, powerLevel, worldY, state.status, goalDistance, getPointAt, powerUpEndTime, chimeraSize, chimeraHits, chimeraPos, chimeraVel, canvasSize],
   );
 
   // Game loop control
@@ -965,35 +1009,38 @@ export default function GameCanvas() {
   };
 
   return (
-    <div className="relative">
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_W}
-        height={CANVAS_H}
-        className="block max-w-full border bg-slate-800"
-        tabIndex={-1}
-      />
-      
-      {/* Animated GIF Enemy using img element */}
-      {state.status === "running" && (
-        <img
-          key="enemy-gif"
-          src="/enemy.gif"
-          alt="Chimera Enemy"
-          style={{
-            position: 'absolute',
-            left: chimeraPos.x,
-            top: chimeraPos.y,
-            width: chimeraSize,
-            height: chimeraSize,
-            pointerEvents: 'none',
-            zIndex: 10,
-            imageRendering: 'pixelated'
-          }}
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 p-4">
+      <div className="relative">
+        <canvas
+          ref={canvasRef}
+          width={canvasSize.width}
+          height={canvasSize.height}
+          className="block border bg-slate-800"
+          tabIndex={-1}
         />
-      )}
-      
-      {overlay()}
+
+        {/* Animated GIF Enemy using img element */}
+        {state.status === "running" && (
+          <img
+            key="enemy-gif"
+            src="/enemy.gif"
+            alt="Chimera Enemy"
+            style={{
+              position: 'absolute',
+              left: chimeraPos.x,
+              top: chimeraPos.y,
+              width: chimeraSize,
+              height: chimeraSize,
+              pointerEvents: 'none',
+              zIndex: 10,
+              imageRendering: 'pixelated'
+            }}
+          />
+        )}
+
+        {overlay()}
+      </div>
     </div>
   );
 };
+
