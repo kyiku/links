@@ -78,16 +78,13 @@ export default function GameCanvas() {
   const POWER_UP_DURATION = 10000; // 10 seconds in milliseconds
   
   // Boss (Chimera) system
-  const chimeraRef = useRef<HTMLImageElement>();
   const [chimeraSize, setChimeraSize] = useState<number>(32); // Start small (32x32)
   const [chimeraHits, setChimeraHits] = useState<number>(0);
   const [chimeraPos, setChimeraPos] = useState({ x: CANVAS_W / 2, y: 50 });
   const [chimeraVel, setChimeraVel] = useState({ x: 150, y: 100 });
-  const [chimeraFrameTime, setChimeraFrameTime] = useState<number>(0);
   const CHIMERA_INITIAL_SIZE = 32;
   const CHIMERA_GROWTH_RATE = 4; // Pixels to grow per hit
   const CHIMERA_MAX_SIZE = 999999; // Allow unlimited growth
-  const GIF_FRAME_DURATION = 100; // Milliseconds per frame to force redraw
   const [slideOffset, setSlideOffset] = useState({ x: 0, y: 0 });
   const slideAnimationRef = useRef<{ startTime: number; fromOffset: { x: number; y: number }; toOffset: { x: number; y: number } } | null>(null);
 
@@ -126,23 +123,6 @@ export default function GameCanvas() {
       tiles.push(img);
     }
     tilesRef.current = tiles;
-  }, []);
-
-  // Load Chimera image with proper GIF handling
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const chimeraImg = new Image();
-    chimeraImg.onload = () => {
-      console.log('Chimera image loaded successfully', chimeraImg.width, chimeraImg.height);
-    };
-    chimeraImg.onerror = (e) => {
-      console.error('Failed to load Chimera image:', e);
-    };
-    // Add cache busting and force reload for GIF animation
-    chimeraImg.src = '/enemy.gif?' + Math.random();
-    chimeraRef.current = chimeraImg;
-    console.log('Chimera image loading started:', chimeraImg.src);
   }, []);
 
   // Get boustrophedon position for tile index
@@ -259,7 +239,6 @@ export default function GameCanvas() {
     setChimeraHits(0);
     setChimeraPos({ x: CANVAS_W / 2, y: 50 });
     setChimeraVel({ x: 150, y: 100 });
-    setChimeraFrameTime(0);
     // Clear input state to avoid stuck keys between runs
     keysRef.current = {};
     playerRef.current = {
@@ -672,9 +651,6 @@ export default function GameCanvas() {
       setChimeraPos({ x: newChimeraX, y: newChimeraY });
       setChimeraVel({ x: newVelX, y: newVelY });
 
-      // Update GIF frame time to force redraw
-      setChimeraFrameTime((prev) => prev + dt * 1000);
-
       // Collisions: bullets vs Chimera boss
       const chimera = {
         x: chimeraPos.x,
@@ -877,27 +853,6 @@ export default function GameCanvas() {
         }
       });
 
-      // Draw Chimera boss (always visible on screen) - Simplified for better GIF animation
-      if (chimeraRef.current && state.status === "running") {
-        if (chimeraRef.current.complete && chimeraRef.current.naturalWidth > 0) {
-          // Simple direct draw - let browser handle GIF animation
-          ctx.drawImage(
-            chimeraRef.current,
-            chimeraPos.x,
-            chimeraPos.y,
-            chimeraSize,
-            chimeraSize
-          );
-        } else {
-          // Show placeholder while loading
-          ctx.fillStyle = "#ff00ff";
-          ctx.fillRect(chimeraPos.x, chimeraPos.y, chimeraSize, chimeraSize);
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "12px monospace";
-          ctx.fillText("Loading...", chimeraPos.x, chimeraPos.y + 15);
-        }
-      }
-
       // HUD
       ctx.fillStyle = "#ffffff";
       ctx.font = "16px monospace";
@@ -932,7 +887,7 @@ export default function GameCanvas() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fire, score, powerLevel, worldY, state.status, goalDistance, getPointAt, powerUpEndTime, chimeraSize, chimeraHits, chimeraPos, chimeraVel, chimeraFrameTime],
+    [fire, score, powerLevel, worldY, state.status, goalDistance, getPointAt, powerUpEndTime, chimeraSize, chimeraHits, chimeraPos, chimeraVel],
   );
 
   // Game loop control
@@ -1010,18 +965,35 @@ export default function GameCanvas() {
   };
 
   return (
-    <div className="relative grid h-[100svh] w-[100vw] place-items-center overflow-hidden">
+    <div className="relative">
       <canvas
         ref={canvasRef}
         width={CANVAS_W}
         height={CANVAS_H}
-        className="block aspect-[4/5] w-[min(100vw,calc(100svh*0.8))] touch-none bg-black select-none"
+        className="block max-w-full border bg-slate-800"
+        tabIndex={-1}
       />
+      
+      {/* Animated GIF Enemy using img element */}
+      {state.status === "running" && (
+        <img
+          key="enemy-gif"
+          src="/enemy.gif"
+          alt="Chimera Enemy"
+          style={{
+            position: 'absolute',
+            left: chimeraPos.x,
+            top: chimeraPos.y,
+            width: chimeraSize,
+            height: chimeraSize,
+            pointerEvents: 'none',
+            zIndex: 10,
+            imageRendering: 'pixelated'
+          }}
+        />
+      )}
+      
       {overlay()}
-      <p className="mt-3 text-sm text-zinc-300">
-        背景画像は <code>/public/maps/map1.jpg</code> または{" "}
-        <code>map1.png</code> を配置すると反映されます。
-      </p>
     </div>
   );
-}
+};

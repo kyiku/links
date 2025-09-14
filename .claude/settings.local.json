@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__serena__activate_project",
+      "mcp__serena__check_onboarding_performed",
+      "mcp__serena__onboarding",
+      "mcp__serena__list_dir",
+      "mcp__serena__write_memory",
+      "Bash(npm install)",
+      "Bash(npm run dev:*)",
+      "Bash(cp:*)",
+      "mcp__serena__search_for_pattern",
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__find_symbol",
+      "Bash(mv:*)",
+      "Bash(curl:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsx:*)",
+      "mcp__serena__replace_symbol_body",
+      "mcp__serena__insert_after_symbol",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)",
+      "mcp__serena__read_memory"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "serena"
+  ]
+}
