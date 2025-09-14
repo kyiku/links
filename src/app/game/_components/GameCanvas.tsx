@@ -42,7 +42,7 @@ const tryLoadImage = (src: string) => {
   const img = new Image();
   img.src = src;
   return img;
-};;
+};
 
 // Prefer PNG; .jpg/.jpeg kept as secondary fallbacks
 const bgCandidates = ["/maps/map1.png", "/maps/map1.jpg", "/maps/map1.jpeg"];
@@ -72,6 +72,22 @@ export default function GameCanvas() {
   // Track destroyed obstacles and collected items per tile
   const destroyedObstaclesRef = useRef<Set<string>>(new Set());
   const collectedItemsRef = useRef<Set<string>>(new Set());
+  
+  // Power-up timer system
+  const [powerUpEndTime, setPowerUpEndTime] = useState<number>(0);
+  const POWER_UP_DURATION = 10000; // 10 seconds in milliseconds
+  
+  // Boss (Chimera) system
+  const chimeraRef = useRef<HTMLImageElement>();
+  const [chimeraSize, setChimeraSize] = useState<number>(32); // Start small (32x32)
+  const [chimeraHits, setChimeraHits] = useState<number>(0);
+  const [chimeraPos, setChimeraPos] = useState({ x: CANVAS_W / 2, y: 50 });
+  const [chimeraVel, setChimeraVel] = useState({ x: 150, y: 100 });
+  const [chimeraFrameTime, setChimeraFrameTime] = useState<number>(0);
+  const CHIMERA_INITIAL_SIZE = 32;
+  const CHIMERA_GROWTH_RATE = 4; // Pixels to grow per hit
+  const CHIMERA_MAX_SIZE = 999999; // Allow unlimited growth
+  const GIF_FRAME_DURATION = 100; // Milliseconds per frame to force redraw
   const [slideOffset, setSlideOffset] = useState({ x: 0, y: 0 });
   const slideAnimationRef = useRef<{ startTime: number; fromOffset: { x: number; y: number }; toOffset: { x: number; y: number } } | null>(null);
 
@@ -110,6 +126,23 @@ export default function GameCanvas() {
       tiles.push(img);
     }
     tilesRef.current = tiles;
+  }, []);
+
+  // Load Chimera image with proper GIF handling
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const chimeraImg = new Image();
+    chimeraImg.onload = () => {
+      console.log('Chimera image loaded successfully', chimeraImg.width, chimeraImg.height);
+    };
+    chimeraImg.onerror = (e) => {
+      console.error('Failed to load Chimera image:', e);
+    };
+    // Add cache busting and force reload for GIF animation
+    chimeraImg.src = '/enemy.gif?' + Math.random();
+    chimeraRef.current = chimeraImg;
+    console.log('Chimera image loading started:', chimeraImg.src);
   }, []);
 
   // Get boustrophedon position for tile index
@@ -219,6 +252,14 @@ export default function GameCanvas() {
     setCurrentTileIndex(0);
     setSlideOffset({ x: 0, y: 0 });
     tileStartTimeRef.current = null;
+    // Reset power-up timer
+    setPowerUpEndTime(0);
+    // Reset Chimera boss
+    setChimeraSize(CHIMERA_INITIAL_SIZE);
+    setChimeraHits(0);
+    setChimeraPos({ x: CANVAS_W / 2, y: 50 });
+    setChimeraVel({ x: 150, y: 100 });
+    setChimeraFrameTime(0);
     // Clear input state to avoid stuck keys between runs
     keysRef.current = {};
     playerRef.current = {
@@ -393,6 +434,12 @@ export default function GameCanvas() {
       // Update world scroll
       const advance = SCROLL_SPEED * dt;
       setWorldY((y) => y + advance);
+
+      // Check if power-up has expired
+      if (powerUpEndTime > 0 && ts >= powerUpEndTime) {
+        setPowerLevel(1); // Reset to base power level
+        setPowerUpEndTime(0);
+      }
 
       // Player movement
       const p = playerRef.current;
@@ -598,6 +645,55 @@ export default function GameCanvas() {
           }
         }
       }
+
+      // Update Chimera position with better boundary detection
+      let newChimeraX = chimeraPos.x + chimeraVel.x * dt;
+      let newChimeraY = chimeraPos.y + chimeraVel.y * dt;
+      let newVelX = chimeraVel.x;
+      let newVelY = chimeraVel.y;
+
+      // Check boundaries and bounce
+      if (newChimeraX <= 0) {
+        newChimeraX = 0;
+        newVelX = Math.abs(newVelX);
+      } else if (newChimeraX >= CANVAS_W - chimeraSize) {
+        newChimeraX = CANVAS_W - chimeraSize;
+        newVelX = -Math.abs(newVelX);
+      }
+
+      if (newChimeraY <= 0) {
+        newChimeraY = 0;
+        newVelY = Math.abs(newVelY);
+      } else if (newChimeraY >= CANVAS_H - chimeraSize) {
+        newChimeraY = CANVAS_H - chimeraSize;
+        newVelY = -Math.abs(newVelY);
+      }
+
+      setChimeraPos({ x: newChimeraX, y: newChimeraY });
+      setChimeraVel({ x: newVelX, y: newVelY });
+
+      // Update GIF frame time to force redraw
+      setChimeraFrameTime((prev) => prev + dt * 1000);
+
+      // Collisions: bullets vs Chimera boss
+      const chimera = {
+        x: chimeraPos.x,
+        y: chimeraPos.y,
+        w: chimeraSize,
+        h: chimeraSize
+      };
+
+      for (const b of bulletsRef.current) {
+        if (aabb(b, chimera)) {
+          // Mark bullet for removal
+          b.y = -100;
+          // Grow Chimera when hit (unlimited growth)
+          setChimeraSize((size) => size + CHIMERA_GROWTH_RATE);
+          setChimeraHits((hits) => hits + 1);
+          setScore((s) => s + 20); // More points for hitting boss
+        }
+      }
+
       bulletsRef.current = bulletsRef.current.filter((b) => b.y > -50);
 
       // Collisions: player vs obstacle
@@ -623,8 +719,27 @@ export default function GameCanvas() {
           if (pw.id) {
             collectedItemsRef.current.add(pw.id);
           }
+          // Activate timed power-up
           setPowerLevel((lv) => Math.min(5, lv + 1));
+          setPowerUpEndTime(ts + POWER_UP_DURATION);
           setScore((s) => s + 5);
+        }
+      }
+
+      // Collisions: player vs Chimera (game over)
+      if (state.status === "running") {
+        const chimeraCollisionBox = {
+          x: chimeraPos.x,
+          y: chimeraPos.y,
+          w: chimeraSize,
+          h: chimeraSize
+        };
+
+        if (aabb(p, chimeraCollisionBox)) {
+          const startedAt =
+            (state.status === "running" ? state.startedAt : ts) || ts;
+          const durationMs = Math.max(0, ts - startedAt);
+          setState({ status: "over", win: false, durationMs });
         }
       }
 
@@ -762,18 +877,50 @@ export default function GameCanvas() {
         }
       });
 
+      // Draw Chimera boss (always visible on screen) - Simplified for better GIF animation
+      if (chimeraRef.current && state.status === "running") {
+        if (chimeraRef.current.complete && chimeraRef.current.naturalWidth > 0) {
+          // Simple direct draw - let browser handle GIF animation
+          ctx.drawImage(
+            chimeraRef.current,
+            chimeraPos.x,
+            chimeraPos.y,
+            chimeraSize,
+            chimeraSize
+          );
+        } else {
+          // Show placeholder while loading
+          ctx.fillStyle = "#ff00ff";
+          ctx.fillRect(chimeraPos.x, chimeraPos.y, chimeraSize, chimeraSize);
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "12px monospace";
+          ctx.fillText("Loading...", chimeraPos.x, chimeraPos.y + 15);
+        }
+      }
+
       // HUD
       ctx.fillStyle = "#ffffff";
       ctx.font = "16px monospace";
+      
+      // Calculate power-up timer
+      const powerUpTimeLeft = powerUpEndTime > 0 ? Math.max(0, Math.ceil((powerUpEndTime - ts) / 1000)) : 0;
+      const powerUpDisplay = powerUpTimeLeft > 0 ? `  Power: ${powerUpTimeLeft}s` : "";
+
       if (state.status === "running" && tilesRef.current.length > 0) {
         ctx.fillText(
-          `Score: ${score}  Power: ${powerLevel}  Tile: ${currentTileIndex + 1}/${TOTAL_TILES}`,
+          `Score: ${score}  Power: ${powerLevel}${powerUpDisplay}  Tile: ${currentTileIndex + 1}/${TOTAL_TILES}`,
           12,
           22,
         );
+        // Second line for Chimera info
+        ctx.fillText(
+          `Chimera Hits: ${chimeraHits}  Size: ${chimeraSize}px`,
+          12,
+          42,
+        );
       } else {
         ctx.fillText(
-          `Score: ${score}  Power: ${powerLevel}  Dist: ${Math.floor(worldY)}/${goalDistance}`,
+          `Score: ${score}  Power: ${powerLevel}${powerUpDisplay}  Dist: ${Math.floor(worldY)}/${goalDistance}`,
           12,
           22,
         );
@@ -785,8 +932,8 @@ export default function GameCanvas() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fire, score, powerLevel, worldY, state.status, goalDistance, getPointAt],
-  );;;;;;
+    [fire, score, powerLevel, worldY, state.status, goalDistance, getPointAt, powerUpEndTime, chimeraSize, chimeraHits, chimeraPos, chimeraVel, chimeraFrameTime],
+  );
 
   // Game loop control
   useEffect(() => {
